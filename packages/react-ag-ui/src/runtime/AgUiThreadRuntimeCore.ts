@@ -667,7 +667,10 @@ export class AgUiThreadRuntimeCore {
         ) {
           return {
             ...(msg as ThreadAssistantMessage),
-            status: { type: "incomplete" as const, reason: "cancelled" as const },
+            status: {
+              type: "incomplete" as const,
+              reason: "cancelled" as const,
+            },
           } as ThreadAssistantMessage;
         }
         return msg;
