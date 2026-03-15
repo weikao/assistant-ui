@@ -1,7 +1,7 @@
 import type { AppendMessage, ThreadMessage } from "../../types/message";
 import type { CompleteAttachment } from "../../types/attachment";
 import { getThreadMessageText } from "../../utils/text";
-import { attachmentsEqual, liftNonTextParts } from "../../adapters/attachment";
+import { liftNonTextParts } from "../../adapters/attachment";
 import type { AttachmentAdapter } from "../../adapters/attachment";
 import type { DictationAdapter } from "../../adapters/speech";
 import type { SendOptions } from "../interfaces/composer-runtime-core";
@@ -80,48 +80,38 @@ export class DefaultEditComposerRuntimeCore extends BaseComposerRuntimeCore {
     message: Omit<AppendMessage, "parentId" | "sourceId">,
     options?: SendOptions,
   ) {
-    const text = getThreadMessageText(message as AppendMessage);
-    const attachmentsChanged = !attachmentsEqual(
-      message.attachments ?? [],
-      this._previousAttachments,
+    // Local fix (97961c571): always append, do not guard on text/attachment
+    // equality — otherwise legitimate re-sends of unchanged content are dropped.
+    const content =
+      this._nonTextPassthrough.length > 0
+        ? ([
+            ...message.content,
+            ...this._nonTextPassthrough,
+          ] as AppendMessage["content"])
+        : message.content;
+    // Gate live state against the new branch's prefix (messages up to the
+    // parent): an unchanged interactable re-stamps the prior baseline, an
+    // interactable edited since the original message stamps its newest state.
+    const messages = this.runtime.messages;
+    const parentIndex =
+      this._parentId === null
+        ? -1
+        : messages.findIndex((m) => m.id === this._parentId);
+    const composerMetadata = gateInteractableComposerMetadata(
+      this.runtime.getModelContext().unstable_composerMetadata,
+      messages.slice(0, parentIndex + 1),
     );
-
-    if (
-      text !== this._previousText ||
-      attachmentsChanged ||
-      options?.startRun
-    ) {
-      const content =
-        this._nonTextPassthrough.length > 0
-          ? ([
-              ...message.content,
-              ...this._nonTextPassthrough,
-            ] as AppendMessage["content"])
-          : message.content;
-      // Gate live state against the new branch's prefix (messages up to the
-      // parent): an unchanged interactable re-stamps the prior baseline, an
-      // interactable edited since the original message stamps its newest state.
-      const messages = this.runtime.messages;
-      const parentIndex =
-        this._parentId === null
-          ? -1
-          : messages.findIndex((m) => m.id === this._parentId);
-      const composerMetadata = gateInteractableComposerMetadata(
-        this.runtime.getModelContext().unstable_composerMetadata,
-        messages.slice(0, parentIndex + 1),
-      );
-      const enriched = this.enrichWithComposerMetadata(
-        message,
-        composerMetadata,
-      );
-      this.runtime.append({
-        ...enriched,
-        content,
-        parentId: this._parentId,
-        sourceId: this._sourceId,
-        startRun: options?.startRun,
-      });
-    }
+    const enriched = this.enrichWithComposerMetadata(
+      message,
+      composerMetadata,
+    );
+    this.runtime.append({
+      ...enriched,
+      content,
+      parentId: this._parentId,
+      sourceId: this._sourceId,
+      startRun: options?.startRun,
+    });
 
     this.handleCancel();
   }
