@@ -77,8 +77,33 @@ export const createAgUiSubscriber = (
           ? (event as Record<string, unknown>)["type"]
           : undefined;
       if (typeof typeCandidate === "string") {
-        // Typed handlers will receive this via the discriminated callbacks; avoid duplicates.
-        return;
+        // Only skip event types that @ag-ui/client dispatches to typed handlers.
+        // THINKING_* and REASONING_* events are NOT handled by typed callbacks in
+        // @ag-ui/client v0.0.47, so they must be processed here via onEvent.
+        const clientHandledTypes = new Set([
+          "RUN_STARTED",
+          "RUN_FINISHED",
+          "RUN_ERROR",
+          "TEXT_MESSAGE_START",
+          "TEXT_MESSAGE_CONTENT",
+          "TEXT_MESSAGE_END",
+          "TEXT_MESSAGE_CHUNK",
+          "TOOL_CALL_START",
+          "TOOL_CALL_ARGS",
+          "TOOL_CALL_END",
+          "TOOL_CALL_CHUNK",
+          "TOOL_CALL_RESULT",
+          "STATE_SNAPSHOT",
+          "STATE_DELTA",
+          "MESSAGES_SNAPSHOT",
+          "STEP_STARTED",
+          "STEP_FINISHED",
+          "CUSTOM",
+          "RAW",
+        ]);
+        if (clientHandledTypes.has(typeCandidate)) {
+          return;
+        }
       }
       const parsed = parseAgUiEvent(event);
       if (parsed) dispatch(parsed);
