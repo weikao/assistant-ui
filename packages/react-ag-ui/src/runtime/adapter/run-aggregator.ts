@@ -43,15 +43,18 @@ export class RunAggregator {
     { buffer: string; touched: boolean }
   >();
   private activeTextMessageId: string | undefined;
-  private reasoningBuffer = "";
-  private reasoningActive = false;
+  private readonly reasoningParts = new Map<
+    number,
+    { buffer: string; active: boolean }
+  >();
+  private currentReasoningId = -1;
   private readonly toolCalls = new Map<string, ToolCallState>();
   private readonly partOrder: (
     | { kind: "text"; key: string }
-    | { kind: "reasoning" }
+    | { kind: "reasoning"; id: number }
     | { kind: "tool-call"; toolCallId: string }
   )[] = [];
-  private hasReasoningPart = false;
+  private reasoningPartCounter = 0;
   private textPartCounter = 0;
 
   constructor(options: RunAggregatorOptions) {
@@ -64,11 +67,11 @@ export class RunAggregator {
     switch (event.type) {
       case "RUN_STARTED": {
         this.clearTextParts();
-        this.reasoningBuffer = "";
-        this.reasoningActive = false;
+        this.reasoningParts.clear();
+        this.currentReasoningId = -1;
         this.toolCalls.clear();
         this.partOrder.length = 0;
-        this.hasReasoningPart = false;
+        this.reasoningPartCounter = 0;
         this.textPartCounter = 0;
         this.activeTextMessageId = undefined;
         this.status = { type: "running" };
@@ -134,19 +137,25 @@ export class RunAggregator {
       }
 
       case "THINKING_START":
-      case "THINKING_TEXT_MESSAGE_START":
       case "REASONING_START":
-      case "REASONING_MESSAGE_START":
+        // Block-level start: create a new reasoning part
         this.handleReasoningStart();
+        break;
+      case "THINKING_TEXT_MESSAGE_START":
+      case "REASONING_MESSAGE_START":
+        // Inner text start: no-op (content will flow into the active part)
         break;
       case "THINKING_TEXT_MESSAGE_CONTENT":
       case "REASONING_MESSAGE_CONTENT":
         this.handleReasoningContent(event.delta);
         break;
       case "THINKING_TEXT_MESSAGE_END":
-      case "THINKING_END":
       case "REASONING_MESSAGE_END":
+        // Inner text end: no-op (the block is still open)
+        break;
+      case "THINKING_END":
       case "REASONING_END":
+        // Block-level end: close the reasoning part
         this.handleReasoningEnd();
         break;
 
@@ -196,7 +205,18 @@ export class RunAggregator {
   }
 
   private startTextMessage(messageId?: string): string {
-    const id = messageId ?? this.generateTextKey();
+    // If a new TEXT_MESSAGE_START arrives after tool-calls already exist,
+    // it means we've entered a new round (Tool-Call Loop). Force a new text
+    // part so each round's text stays independent, even when the backend
+    // reuses the same messageId across rounds.
+    const hasToolCalls = this.toolCalls.size > 0;
+    if (messageId && !hasToolCalls) {
+      this.ensureTextPart(messageId);
+      this.activeTextMessageId = messageId;
+      return messageId;
+    }
+    // New round (after tool-calls) or no messageId: generate unique key
+    const id = this.generateTextKey();
     this.ensureTextPart(id);
     this.activeTextMessageId = id;
     return id;
@@ -204,7 +224,25 @@ export class RunAggregator {
 
   private resolveTextMessageId(messageId?: string): string {
     if (messageId) {
-      this.ensureTextPart(messageId);
+      const alreadyExists = this.textParts.has(messageId);
+      const hasToolCalls = this.toolCalls.size > 0;
+      if (!alreadyExists) {
+        // Brand new messageId: use as-is
+        this.ensureTextPart(messageId);
+        this.activeTextMessageId = messageId;
+        return messageId;
+      }
+      if (hasToolCalls) {
+        // Same messageId reused in a new round (after tool-calls): use the
+        // activeTextMessageId that startTextMessage already set up for this round.
+        if (this.activeTextMessageId) return this.activeTextMessageId;
+        // Safety fallback: generate a new key
+        const generated = this.generateTextKey();
+        this.ensureTextPart(generated);
+        this.activeTextMessageId = generated;
+        return generated;
+      }
+      // Same round, same messageId: continue using it
       this.activeTextMessageId = messageId;
       return messageId;
     }
@@ -326,13 +364,16 @@ export class RunAggregator {
 
     for (const part of this.partOrder) {
       if (part.kind === "reasoning") {
+        const reasoningEntry = this.reasoningParts.get(part.id);
         if (
           this.showThinking &&
-          (this.reasoningActive || this.reasoningBuffer.length > 0)
+          reasoningEntry &&
+          (reasoningEntry.active || reasoningEntry.buffer.length > 0)
         ) {
           snapshot.push({
             type: "reasoning",
-            text: this.reasoningBuffer,
+            text: reasoningEntry.buffer,
+            ...(reasoningEntry.active ? { active: true } : {}),
           } as const);
         }
         continue;
@@ -370,32 +411,34 @@ export class RunAggregator {
 
   private handleReasoningStart(): void {
     if (!this.showThinking) return;
-    this.reasoningActive = true;
-    this.ensureReasoningPart();
+    // Create a NEW reasoning part for each thinking sequence (each round)
+    this.reasoningPartCounter++;
+    this.currentReasoningId = this.reasoningPartCounter;
+    this.reasoningParts.set(this.currentReasoningId, {
+      buffer: "",
+      active: true,
+    });
+    // Append reasoning at the current position (chronological order)
+    this.partOrder.push({ kind: "reasoning", id: this.currentReasoningId });
     this.emit();
   }
 
   private handleReasoningContent(delta: string): void {
     if (!this.showThinking || !delta) return;
-    this.reasoningBuffer += delta;
-    this.ensureReasoningPart();
+    if (this.currentReasoningId < 0) return;
+    const entry = this.reasoningParts.get(this.currentReasoningId);
+    if (!entry) return;
+    entry.buffer += delta;
     this.emit();
   }
 
   private handleReasoningEnd(): void {
     if (!this.showThinking) return;
-    this.emit();
-  }
-
-  private ensureReasoningPart(): void {
-    if (this.hasReasoningPart) return;
-    // ensure reasoning appears before the first text segment if possible
-    const textIndex = this.partOrder.findIndex((part) => part.kind === "text");
-    if (textIndex === -1) {
-      this.partOrder.push({ kind: "reasoning" });
-    } else {
-      this.partOrder.splice(textIndex, 0, { kind: "reasoning" });
+    if (this.currentReasoningId >= 0) {
+      const entry = this.reasoningParts.get(this.currentReasoningId);
+      if (entry) entry.active = false;
     }
-    this.hasReasoningPart = true;
+    this.currentReasoningId = -1;
+    this.emit();
   }
 }
