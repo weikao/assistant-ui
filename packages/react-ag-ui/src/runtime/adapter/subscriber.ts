@@ -6,6 +6,44 @@ import type { Logger } from "../logger";
 
 type Dispatch = (event: AgUiEvent) => void;
 
+// Event types that @ag-ui/client (>=0.0.57) delivers to a dedicated typed
+// callback (onTextMessageContentEvent, onToolCallStartEvent, ...). For these
+// types, `onEvent` is invoked in addition to the typed callback; we skip it
+// there to avoid double-dispatching the same event.
+//
+// THINKING_* and REASONING_* are intentionally omitted: @ag-ui/client does
+// NOT invoke `onReasoning*Event` / `onThinking*Event` in the currently
+// supported version, so those events only reach us through `onEvent` and
+// must fall through to `dispatch` below. If a future @ag-ui/client version
+// starts delivering them to typed handlers, add them here to preserve
+// deduplication.
+//
+// STEP_STARTED / STEP_FINISHED are not modeled in AgUiEvent (see types.ts).
+// They are listed here to suppress them from being re-emitted as RAW events
+// via parseAgUiEvent's default branch.
+const CLIENT_TYPED_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "RUN_STARTED",
+  "RUN_FINISHED",
+  "RUN_ERROR",
+  "TEXT_MESSAGE_START",
+  "TEXT_MESSAGE_CONTENT",
+  "TEXT_MESSAGE_END",
+  "TEXT_MESSAGE_CHUNK",
+  "TOOL_CALL_START",
+  "TOOL_CALL_ARGS",
+  "TOOL_CALL_END",
+  "TOOL_CALL_CHUNK",
+  "TOOL_CALL_RESULT",
+  "ACTIVITY_SNAPSHOT",
+  "STATE_SNAPSHOT",
+  "STATE_DELTA",
+  "MESSAGES_SNAPSHOT",
+  "STEP_STARTED",
+  "STEP_FINISHED",
+  "CUSTOM",
+  "RAW",
+] satisfies readonly (AgUiEvent["type"] | "STEP_STARTED" | "STEP_FINISHED")[]);
+
 type Subscriber = {
   onEvent?: (payload: { event: unknown }) => void;
   onTextMessageStartEvent?: (payload: { event: unknown }) => void;
@@ -92,34 +130,14 @@ export const createAgUiSubscriber = (
         event && typeof event === "object"
           ? (event as Record<string, unknown>).type
           : undefined;
-      if (typeof typeCandidate === "string") {
-        // Only skip event types that @ag-ui/client dispatches to typed handlers.
-        // THINKING_* and REASONING_* events are NOT handled by typed callbacks in
-        // @ag-ui/client v0.0.47, so they must be processed here via onEvent.
-        const clientHandledTypes = new Set([
-          "RUN_STARTED",
-          "RUN_FINISHED",
-          "RUN_ERROR",
-          "TEXT_MESSAGE_START",
-          "TEXT_MESSAGE_CONTENT",
-          "TEXT_MESSAGE_END",
-          "TEXT_MESSAGE_CHUNK",
-          "TOOL_CALL_START",
-          "TOOL_CALL_ARGS",
-          "TOOL_CALL_END",
-          "TOOL_CALL_CHUNK",
-          "TOOL_CALL_RESULT",
-          "STATE_SNAPSHOT",
-          "STATE_DELTA",
-          "MESSAGES_SNAPSHOT",
-          "STEP_STARTED",
-          "STEP_FINISHED",
-          "CUSTOM",
-          "RAW",
-        ]);
-        if (clientHandledTypes.has(typeCandidate)) {
-          return;
-        }
+      if (
+        typeof typeCandidate === "string" &&
+        CLIENT_TYPED_EVENT_TYPES.has(typeCandidate)
+      ) {
+        // Already delivered via the corresponding typed callback; skip to
+        // avoid double dispatch. THINKING_* / REASONING_* fall through here
+        // because @ag-ui/client only delivers them via onEvent.
+        return;
       }
       const parsed = parseAgUiEvent(event);
       if (parsed) dispatch(parsed);
@@ -161,8 +179,7 @@ export const createAgUiSubscriber = (
       dispatchIfValid(event, "TOOL_CALL_RESULT"),
     onActivitySnapshotEvent: ({ event }) =>
       dispatchIfValid(event, "ACTIVITY_SNAPSHOT"),
-    onRunErrorEvent: ({ event }) =>
-      dispatchIfValid(event, "RUN_ERROR"),
+    onRunErrorEvent: ({ event }) => dispatchIfValid(event, "RUN_ERROR"),
     onStateSnapshotEvent: ({ event }) =>
       dispatchIfValid(event, "STATE_SNAPSHOT"),
     onStateDeltaEvent: ({ event }) => dispatchIfValid(event, "STATE_DELTA"),
