@@ -20,6 +20,39 @@ import { useReactEffectEvent } from "./useReactEffectEvent";
 // @ts-expect-error -- @types/react uses `export =`; this is valid at runtime.
 export * from "react";
 export { default } from "react";
+// ── Explicit re-exports ──────────────────────────────────────────────────────
+// Vite pre-bundles React (CJS) into a virtual ESM module. Star re-exports
+// (`export * from "react"`) fail to propagate named exports in that scenario,
+// causing "does not provide an export named …" runtime errors.
+// We therefore re-export every non-overridden React symbol explicitly.
+export {
+  // Components & element factories
+  Children,
+  Component,
+  Fragment,
+  Profiler,
+  PureComponent,
+  StrictMode,
+  Suspense,
+  cloneElement,
+  createElement,
+  createRef,
+  forwardRef,
+  isValidElement,
+  lazy,
+  memo,
+  // Transitions & concurrent features
+  startTransition,
+  useDeferredValue,
+  useId,
+  useImperativeHandle,
+  useInsertionEffect,
+  useTransition,
+  // Misc
+  act,
+  cache,
+  version,
+} from "react";
 
 const inTap = () => peekResourceFiber() !== null;
 const ReactRuntime = React as any;
