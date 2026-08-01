@@ -34,17 +34,20 @@ export function useAdaptedComponents({
       componentsByLanguage,
     };
 
-    const baseComponents = { pre: PreOverride };
-
     if (!shouldUseCodeAdapter(codeAdapterOptions)) {
-      return { ...htmlComponents, ...baseComponents };
+      // Respect a user-provided `pre` override (e.g. custom code block action
+      // bars). The custom component is then responsible for marking the child
+      // code element with data-block, mirroring PreOverride's behavior.
+      return { ...htmlComponents, pre: htmlComponents.pre ?? PreOverride };
     }
 
     const AdaptedCode = createCodeAdapter(codeAdapterOptions);
 
     return {
       ...htmlComponents,
-      ...baseComponents,
+      // The code adapter relies on PreOverride's data-block marking and
+      // PreContext, so a user `pre` override cannot be honored here.
+      pre: PreOverride,
       code: AdaptedCode,
     };
   }, [components, componentsByLanguage]);
