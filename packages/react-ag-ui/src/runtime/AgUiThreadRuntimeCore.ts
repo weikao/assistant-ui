@@ -86,6 +86,14 @@ export class AgUiThreadRuntimeCore {
   private lastRunConfig: RunConfig | undefined;
   private readonly assistantHistoryParents = new Map<string, string | null>();
   private readonly recordedHistoryIds = new Set<string>();
+  // V232：TOOL_RESULT 续跑复用的 assistant 消息的基准内容快照（run#1 的思考/
+  // 工具卡片 parts）。续跑期间聚合器快照只含 run#2 事件，每次更新以
+  // 「基准 + 快照」重建完整内容，避免 run#1 的 parts 被覆盖丢失；
+  // 快照只增不变，流式增量更新下天然幂等。
+  private readonly resumeBaseContent = new Map<
+    string,
+    ThreadAssistantMessage["content"]
+  >();
   private _isLoading = false;
   private _loadPromise: Promise<void> | undefined;
   private pendingResumeMessageId: string | null = null;
@@ -648,13 +656,22 @@ export class AgUiThreadRuntimeCore {
   }
 
   private startResumeRun(messageId: string): void {
-    void this.startRun(messageId, this.lastRunConfig).catch((error) => {
+    // 会话连续性：TOOL_RESULT 续跑复用携带工具调用的原 assistant 消息（第 5 参），
+    // 最终答案合并进同一气泡，避免一轮问答被渲染成两个独立的 assistant 消息。
+    void this.startRun(
+      messageId,
+      this.lastRunConfig,
+      undefined,
+      undefined,
+      messageId,
+    ).catch((error) => {
       this.onError?.(error instanceof Error ? error : new Error(String(error)));
     });
   }
 
   applyExternalMessages(messages: readonly ThreadMessage[]): void {
     this.assistantHistoryParents.clear();
+    this.resumeBaseContent.clear();
     // If the run is no longer active, sanitize any "running" assistant messages
     // that may have been captured in an external snapshot before cancel/finish.
     // This prevents a race where cancelRun()'s setTimeout restores a stale
@@ -695,6 +712,7 @@ export class AgUiThreadRuntimeCore {
     runConfig?: RunConfig,
     resume?: AgUiResumeEntry[],
     resumeStream?: ResumeStream,
+    resumeAssistantMessageId?: string,
   ): Promise<void> {
     const normalizedRunConfig = runConfig ?? {};
     this.lastRunConfig = normalizedRunConfig;
@@ -706,6 +724,30 @@ export class AgUiThreadRuntimeCore {
     let assistantMessageId: string | undefined;
     const ensureAssistant = () => {
       if (assistantMessageId) return assistantMessageId;
+      // TOOL_RESULT 续跑：复用携带工具调用的原 assistant 消息（preserveToolResults
+      // 会保留已解析的 tool-call parts），并把状态翻回 running 供 UI 显示流式输出。
+      if (resumeAssistantMessageId) {
+        const reused = this.messages.find(
+          (m) => m.id === resumeAssistantMessageId && m.role === "assistant",
+        ) as ThreadAssistantMessage | undefined;
+        if (reused) {
+          assistantMessageId = reused.id;
+          // 快照原内容作为续跑基准：run#1 的思考 + 工具卡片 parts 不得丢失
+          this.resumeBaseContent.set(reused.id, [...reused.content]);
+          this.messages = this.messages.map((m) =>
+            m.id === reused.id
+              ? ({
+                  ...(m as ThreadAssistantMessage),
+                  status: { type: "running" as const },
+                } as ThreadAssistantMessage)
+              : m,
+          );
+          this.notifyUpdate();
+          return assistantMessageId;
+        }
+        // 目标消息已不存在（被外部快照替换等）：清理陈旧基准，回退为常规新建占位
+        this.resumeBaseContent.delete(resumeAssistantMessageId);
+      }
       const created = this.insertAssistantPlaceholder();
       assistantMessageId = created;
       this.markPendingAssistantHistory(created, assistantParentId ?? null);
@@ -989,6 +1031,15 @@ export class AgUiThreadRuntimeCore {
       }
     }
 
+    // 续跑基准随消息 id 迁移（onServerMessageId 触发的占位重命名）
+    const baseEntry = this.resumeBaseContent.get(oldId);
+    if (baseEntry !== undefined) {
+      this.resumeBaseContent.delete(oldId);
+      if (!this.resumeBaseContent.has(newId)) {
+        this.resumeBaseContent.set(newId, baseEntry);
+      }
+    }
+
     if (this.recordedHistoryIds.has(oldId)) {
       this.recordedHistoryIds.delete(oldId);
       this.recordedHistoryIds.add(newId);
@@ -1012,12 +1063,24 @@ export class AgUiThreadRuntimeCore {
         ? this.mergeAssistantMetadata(assistant.metadata, update.metadata)
         : assistant.metadata;
       latestStatus = update.status ?? assistant.status;
+      // V232：续跑中的消息以「基准 + 快照」重建内容，run#1 的思考与工具卡片
+      // parts 保留在前，run#2 的思考/文本流式追加在后，与历史合并路径的
+      // 渲染顺序一致；非续跑路径维持原有 preserveToolResults 行为。
+      const resumeBase = this.resumeBaseContent.get(messageId);
       const content =
         update.content !== undefined
-          ? this.preserveToolResults(
-              assistant.content,
-              update.content as ThreadAssistantMessage["content"],
-            )
+          ? resumeBase
+            ? [
+                ...resumeBase,
+                ...this.preserveToolResults(
+                  resumeBase,
+                  update.content as ThreadAssistantMessage["content"],
+                ),
+              ]
+            : this.preserveToolResults(
+                assistant.content,
+                update.content as ThreadAssistantMessage["content"],
+              )
           : assistant.content;
       return {
         ...assistant,
@@ -1037,6 +1100,11 @@ export class AgUiThreadRuntimeCore {
       resolvedMessageId = stableId;
     } else {
       this.notifyUpdate();
+    }
+    // 续跑结束（complete/incomplete）后基准不再需要；若 LLM 再次调用前端工具，
+    // 下一轮续跑复用消息时会从当前完整内容重新捕获基准。
+    if (latestStatus && this.isTerminalStatus(latestStatus)) {
+      this.resumeBaseContent.delete(resolvedMessageId);
     }
     if (this.isPersistableStatus(latestStatus)) {
       this.persistAssistantHistory(resolvedMessageId);
