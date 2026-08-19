@@ -21,10 +21,14 @@ import {
   $isTextNode,
   COMMAND_PRIORITY_HIGH,
   KEY_ARROW_DOWN_COMMAND,
+  KEY_ARROW_LEFT_COMMAND,
+  KEY_ARROW_RIGHT_COMMAND,
   KEY_ARROW_UP_COMMAND,
   KEY_BACKSPACE_COMMAND,
+  KEY_DOWN_COMMAND,
   KEY_ENTER_COMMAND,
   KEY_ESCAPE_COMMAND,
+  KEY_TAB_COMMAND,
 } from "lexical";
 import { mergeRegister } from "@lexical/utils";
 import { useAui, useAuiState } from "@assistant-ui/store";
@@ -86,10 +90,15 @@ function KeyboardPlugin({
         (event) => {
           if (!event) return false;
           if (event.isComposing) return false;
-          if (event.shiftKey) return false;
 
-          // Let registered plugins (mention, slash command, etc.) handle Enter first
+          // Let registered plugins (mention, slash command, etc.) handle Enter first.
+          // [PATCH] Delegation moved before the shiftKey short-circuit: custom popovers
+          // need Shift+Enter semantics (e.g. ontology mention panel inserts a class with
+          // Shift+Enter). Non-consuming plugins return false, so the original behavior
+          // (Shift+Enter = newline) is unchanged.
           if (delegateToPlugins(event)) return true;
+
+          if (event.shiftKey) return false;
 
           if (submitMode === "none") return false;
 
@@ -153,6 +162,55 @@ function KeyboardPlugin({
         KEY_BACKSPACE_COMMAND,
         (event) => {
           if (event && delegateToPlugins(event)) return true;
+          return false;
+        },
+        COMMAND_PRIORITY_HIGH,
+      ),
+
+      // [PATCH] Extra navigation keys delegated to plugins: custom popovers
+      // (mention picker / slash commands) consume ←/→ (pane switching),
+      // Tab (enter right pane) and PageUp/PageDown (paging) while open.
+      // Non-consuming plugins return false, keeping default caret behavior.
+      editor.registerCommand(
+        KEY_ARROW_LEFT_COMMAND,
+        (event) => {
+          if (event && delegateToPlugins(event)) return true;
+          return false;
+        },
+        COMMAND_PRIORITY_HIGH,
+      ),
+
+      editor.registerCommand(
+        KEY_ARROW_RIGHT_COMMAND,
+        (event) => {
+          if (event && delegateToPlugins(event)) return true;
+          return false;
+        },
+        COMMAND_PRIORITY_HIGH,
+      ),
+
+      editor.registerCommand(
+        KEY_TAB_COMMAND,
+        (event) => {
+          if (event && delegateToPlugins(event)) return true;
+          return false;
+        },
+        COMMAND_PRIORITY_HIGH,
+      ),
+
+      // [PATCH] PageUp/PageDown delegated to plugins: lexical 0.46 has no
+      // dedicated PAGE_UP/PAGE_DOWN commands — KEY_DOWN_COMMAND fires for every
+      // keydown, so filter by key before delegating (custom mention panels use
+      // them for paging). Non-consuming plugins return false, keeping defaults.
+      editor.registerCommand(
+        KEY_DOWN_COMMAND,
+        (event) => {
+          if (
+            event &&
+            (event.key === "PageUp" || event.key === "PageDown") &&
+            delegateToPlugins(event)
+          )
+            return true;
           return false;
         },
         COMMAND_PRIORITY_HIGH,
