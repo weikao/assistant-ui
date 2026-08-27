@@ -120,7 +120,13 @@ export type AgUiEvent =
       outcome?: AgUiRunFinishedOutcome;
     }
   | { type: "RUN_CANCELLED"; runId?: string }
-  | { type: "RUN_ERROR"; message?: string; code?: string }
+  | {
+      type: "RUN_ERROR";
+      message?: string;
+      code?: string;
+      /** 后端附加的结构化错误详情（LLM API HTTP 状态/模型/上游错误体等），供 UI 展示"查看详情" */
+      details?: Record<string, unknown>;
+    }
   | { type: "TEXT_MESSAGE_START"; messageId?: string }
   | { type: "TEXT_MESSAGE_CONTENT"; messageId?: string; delta: string }
   | { type: "TEXT_MESSAGE_END"; messageId?: string }

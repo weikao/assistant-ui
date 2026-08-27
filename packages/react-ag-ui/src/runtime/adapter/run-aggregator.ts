@@ -138,7 +138,12 @@ export class RunAggregator {
           type: "incomplete",
           reason: "error",
           ...(event.message !== undefined ? { error: event.message } : {}),
-        };
+          // ai-reason 扩展：后端 RUN_ERROR 携带的结构化错误详情（details），
+          // UI 侧经 (message.status as any).errorDetails 读取并展示"查看详情"弹窗
+          ...(event.details !== undefined
+            ? { errorDetails: event.details }
+            : {}),
+        } as ChatModelRunResult["status"];
         this.emit();
         break;
       }

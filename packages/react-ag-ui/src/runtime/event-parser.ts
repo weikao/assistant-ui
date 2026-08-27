@@ -100,11 +100,13 @@ export const parseAgUiEvent = (
       return withOptional({ type: "RUN_CANCELLED" as const }, { runId });
     }
     case "RUN_ERROR": {
+      const rawDetails = payload.details;
       return withOptional(
         { type: "RUN_ERROR" as const },
         {
           message: getString("message"),
           code: getString("code"),
+          details: isPlainObject(rawDetails) ? rawDetails : undefined,
         },
       );
     }
