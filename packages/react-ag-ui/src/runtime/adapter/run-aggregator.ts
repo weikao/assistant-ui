@@ -108,6 +108,19 @@ export class RunAggregator {
         break;
       }
       case "RUN_FINISHED": {
+        // ai-reason 防御：RUN_ERROR / RUN_CANCELLED 已是 run 的终态
+        // （AG-UI 协议一个 run 只终止一次）。中间层补发/合成的 RUN_FINISHED
+        // 不得覆盖终态，否则错误标记与“查看详情”入口会被 complete 顶掉消失。
+        if (
+          this.status?.type === "incomplete" &&
+          (this.status.reason === "error" || this.status.reason === "cancelled")
+        ) {
+          this.logger.debug?.(
+            "[agui] ignoring RUN_FINISHED after terminal status",
+            this.status,
+          );
+          break;
+        }
         if (event.outcome?.type === "interrupt") {
           this.interrupts = event.outcome.interrupts;
           this.status = { type: "requires-action", reason: "interrupt" };

@@ -55,6 +55,22 @@ describe("createAgUiSubscriber", () => {
     expect(events[0]).toMatchObject({ type: "RUN_ERROR", message: "boom" });
   });
 
+  it("does not synthesize RUN_FINISHED when finalize follows a server-sent RUN_ERROR event", () => {
+    const events: AgUiEvent[] = [];
+    const subscriber = createAgUiSubscriber({
+      dispatch: (evt) => events.push(evt),
+      runId: "run",
+    });
+
+    subscriber.onRunErrorEvent?.({
+      event: { type: "RUN_ERROR", message: "boom", details: { code: "X" } },
+    });
+    subscriber.onRunFinalized?.();
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "RUN_ERROR", message: "boom" });
+  });
+
   it.each([
     [
       "AbortError name",

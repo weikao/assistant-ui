@@ -179,7 +179,16 @@ export const createAgUiSubscriber = (
       dispatchIfValid(event, "TOOL_CALL_RESULT"),
     onActivitySnapshotEvent: ({ event }) =>
       dispatchIfValid(event, "ACTIVITY_SNAPSHOT"),
-    onRunErrorEvent: ({ event }) => dispatchIfValid(event, "RUN_ERROR"),
+    onRunErrorEvent: ({ event }) => {
+      const parsed = ensureEvent(event, "RUN_ERROR", logger);
+      if (!parsed) return;
+      // ai-reason 修复：服务端下发的 RUN_ERROR 本身就是 run 的终止事件。
+      // 若不置终止标志，SSE 正常关闭后 onRunFinalized 会合成 RUN_FINISHED，
+      // 把 aggregator 的 incomplete/error 覆盖为 complete——错误标记与
+      // “查看详情”入口一闪而过消失（对齐上游 main 分支同位置修复）。
+      runFinishedDispatched = true;
+      dispatch(parsed);
+    },
     onStateSnapshotEvent: ({ event }) =>
       dispatchIfValid(event, "STATE_SNAPSHOT"),
     onStateDeltaEvent: ({ event }) => dispatchIfValid(event, "STATE_DELTA"),

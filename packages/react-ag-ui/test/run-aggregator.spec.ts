@@ -683,6 +683,35 @@ describe("RunAggregator", () => {
     });
   });
 
+  it("ignores RUN_FINISHED arriving after RUN_ERROR", () => {
+    const aggregator = createAggregator(false);
+
+    aggregator.handle({ type: "RUN_STARTED", runId: "r1" } as AgUiEvent);
+    aggregator.handle({ type: "RUN_ERROR", message: "boom" } as AgUiEvent);
+    aggregator.handle({ type: "RUN_FINISHED", runId: "r1" } as AgUiEvent);
+
+    const last = results.at(-1);
+    expect(last?.status).toMatchObject({
+      type: "incomplete",
+      reason: "error",
+      error: "boom",
+    });
+  });
+
+  it("ignores RUN_FINISHED arriving after RUN_CANCELLED", () => {
+    const aggregator = createAggregator(false);
+
+    aggregator.handle({ type: "RUN_STARTED", runId: "r1" } as AgUiEvent);
+    aggregator.handle({ type: "RUN_CANCELLED" } as AgUiEvent);
+    aggregator.handle({ type: "RUN_FINISHED", runId: "r1" } as AgUiEvent);
+
+    const last = results.at(-1);
+    expect(last?.status).toMatchObject({
+      type: "incomplete",
+      reason: "cancelled",
+    });
+  });
+
   it("preserves incomplete/error status when subscriber finalize follows a failed run", () => {
     const aggregator = createAggregator(false);
     const subscriber = createAgUiSubscriber({
