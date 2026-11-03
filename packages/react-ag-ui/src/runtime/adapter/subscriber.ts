@@ -187,6 +187,16 @@ export const createAgUiSubscriber = (
       // 把 aggregator 的 incomplete/error 覆盖为 complete——错误标记与
       // “查看详情”入口一闪而过消失（对齐上游 main 分支同位置修复）。
       runFinishedDispatched = true;
+      // ai-reason 修复：code==='abort' 仅来源于 @ag-ui/client 对客户端 fetch AbortError
+      // 的转换（用户停止 / stale-run watchdog 断连；Chromium 文案为
+      // "BodyStreamBuffer was aborted"），并非服务端错误。降级为 RUN_CANCELLED：
+      // 避免裸英文文案被渲染为消息正文并弹“请求出错”横幅，与用户停止路径的
+      // “已停止生成”语义对齐；服务端软锁释放由 useCustomAguiRuntime 的
+      // onRunErrorEvent 钩子另行通知 cancel 承担。
+      if (parsed.type === "RUN_ERROR" && parsed.code === "abort") {
+        dispatch({ type: "RUN_CANCELLED" } satisfies AgUiEvent);
+        return;
+      }
       dispatch(parsed);
     },
     onStateSnapshotEvent: ({ event }) =>
